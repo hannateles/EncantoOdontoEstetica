@@ -1,0 +1,80 @@
+USE ENCANTO_ODONTO;
+GO
+
+-- ====================================================================
+-- FLUXO COMPLETO (TESTE DE EXECUÇÃO)
+-- Este bloco cria uma nova consulta e a processa totalmente.
+-- ====================================================================
+
+DECLARE @NovoIDConsulta INT;
+DECLARE @ID_PROC_EXEC INT = 11; -- MUDE ESSE ID DE ACORDO COM O PROCEDIMENTO QUE QUER INSERIR 
+DECLARE @FormaPgto VARCHAR(50) = 'PIX';
+DECLARE @Nome_Profissional VARCHAR(100);
+
+-- A. INSERÇÃO: CRIAÇÃO DA CONSULTA 
+INSERT INTO CONSULTA (
+    ID_PACIENTE, 
+    ID_PROFISSIONAL, 
+    DATA_HORA,     
+    STATUS, 
+    VALOR_TOTAL    
+)
+VALUES (
+    (SELECT TOP 1 ID_PACIENTE FROM PACIENTE ORDER BY NEWID()),
+    (SELECT TOP 1 ID_PROFISSIONAL FROM PROFISSIONAL ORDER BY NEWID()),
+    GETDATE(),
+    'REALIZADA',
+    0.00
+);
+
+-- CAPTURA DO ID GERADO AUTOMATICAMENTE:
+SET @NovoIDConsulta = SCOPE_IDENTITY();
+
+-- Busca o nome do profissional para o relatório
+SELECT @Nome_Profissional = NOME FROM PROFISSIONAL P JOIN CONSULTA C ON P.ID_PROFISSIONAL = C.ID_PROFISSIONAL WHERE C.ID_CONSULTA = @NovoIDConsulta;
+
+PRINT N'----------------------------------------------------------------------------------------------------------------';
+PRINT N'INICIANDO FLUXO COMPLETO PARA CONSULTA ID: ' + CAST(@NovoIDConsulta AS VARCHAR) + N' (' + @Nome_Profissional + N')';
+PRINT N'----------------------------------------------------------------------------------------------------------------';
+
+-- B. EXECUÇÃO (2/4): REGISTRO DO PROCEDIMENTO, CUSTO REAL E ATUALIZAÇÃO DO VALOR TOTAL
+EXEC SP_REGISTRAR_ATENDIMENTO 
+    @ID_CONSULTA = @NovoIDConsulta, 
+    @ID_PROCEDIMENTO = @ID_PROC_EXEC; 
+PRINT N'Etapa 2/4: Procedimento, Comissão e Custo do Material registrados com sucesso.';
+
+-- C. CAIXA (3/4): PAGAMENTO DO CLIENTE
+EXEC SP_REGISTRAR_PAGAMENTO 
+    @ID_CONSULTA = @NovoIDConsulta, 
+    @FORMA_PAGAMENTO = @FormaPgto;
+PRINT N'Etapa 3/4: Pagamento do Cliente registrado via ' + @FormaPgto + N' com sucesso.';
+
+
+-- D. RELATÓRIO FINAL (4/4): COMPROVAÇÃO DE COMISSIONAMENTO E MARGEM
+SELECT 
+    'FLUXO FINALIZADO' AS Status,
+    C.ID_CONSULTA,
+    @Nome_Profissional AS Profissional,
+    PP.FORMA_PAGAMENTO AS Pagamento_Cliente,
+    AP.VALOR_COBRADO AS Receita_Bruta,
+    AP.VALOR_COMISSAO AS Comissao_Devida,
+    (SELECT SUM(CUM.CUSTO_TOTAL_MATERIAL) FROM USO_MATERIAL CUM JOIN ATENDIMENTO_PROCEDIMENTO CAP ON CUM.ID_ATENDIMENTO_PROCEDIMENTO = CAP.ID_ATENDIMENTO_PROCEDIMENTO WHERE CAP.ID_CONSULTA = C.ID_CONSULTA) AS Custo_Material_Real,
+    C.VALOR_TOTAL - AP.VALOR_COMISSAO - (SELECT SUM(CUM.CUSTO_TOTAL_MATERIAL) FROM USO_MATERIAL CUM JOIN ATENDIMENTO_PROCEDIMENTO CAP ON CUM.ID_ATENDIMENTO_PROCEDIMENTO = CAP.ID_ATENDIMENTO_PROCEDIMENTO WHERE CAP.ID_CONSULTA = C.ID_CONSULTA) AS Margem_Liquida
+FROM 
+    CONSULTA C
+JOIN ATENDIMENTO_PROCEDIMENTO AP ON C.ID_CONSULTA = AP.ID_CONSULTA
+JOIN PAGAMENTO_PACIENTE PP ON C.ID_CONSULTA = PP.ID_CONSULTA
+WHERE 
+    C.ID_CONSULTA = @NovoIDConsulta;
+
+-- Verificação do Custo Real de Material
+SELECT 
+    'USO REAL DE MATERIAL' AS Etapa,
+    PE.NOME_PRODUTO, -- Nota: Se essa coluna falhar, use NOME_PROD.
+    UM.QTD_REAL_CONSUMIDA,
+    UM.CUSTO_TOTAL_MATERIAL
+FROM USO_MATERIAL UM
+JOIN ATENDIMENTO_PROCEDIMENTO AP ON UM.ID_ATENDIMENTO_PROCEDIMENTO = AP.ID_ATENDIMENTO_PROCEDIMENTO
+JOIN PRODUTO_ESTOQUE PE ON UM.ID_PRODUTO = PE.ID_PRODUTO
+WHERE AP.ID_CONSULTA = @NovoIDConsulta;
+GO
